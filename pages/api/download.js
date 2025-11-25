@@ -166,6 +166,26 @@ const fetchInfoWithFallback = async (yt, videoId) => {
   return { info: null, format: null, videoOnly: false };
 };
 
+const attemptDirectDownload = async (yt, videoId) => {
+  const attempts = [
+    { type: 'video+audio', client: 'ANDROID', format: 'mp4', quality: 'best' },
+    { type: 'video+audio', client: 'WEB', format: 'mp4', quality: 'best' },
+    { type: 'video', client: 'ANDROID', format: 'mp4', quality: 'best' },
+    { type: 'video', client: 'WEB', format: 'mp4', quality: 'best' },
+  ];
+
+  for (const opts of attempts) {
+    try {
+      const stream = await yt.download(videoId, opts);
+      const converted = toNodeStream(stream);
+      if (converted) return { stream: converted, videoOnly: opts.type === 'video' };
+    } catch (err) {
+      console.warn('Direct download attempt failed', opts, err?.message);
+    }
+  }
+  return { stream: null, videoOnly: false };
+};
+
 export default async function handler(req, res) {
   if (req.method !== 'GET') {
     res.setHeader('Allow', 'GET');
@@ -193,30 +213,41 @@ export default async function handler(req, res) {
     const yt = await getClient();
     const { info, format: bestFormat, videoOnly } = await fetchInfoWithFallback(yt, videoId);
 
-    if (!bestFormat) {
-      return res.status(500).json({ error: 'Geen geschikt formaat gevonden voor deze video.' });
+    let downloadStream = null;
+    let usingVideoOnly = videoOnly;
+    let safeTitle = 'short';
+    let mime = 'video/mp4';
+
+    if (bestFormat && info) {
+      safeTitle = sanitizeFileName(info.basic_info?.title);
+      mime = bestFormat.mime_type?.split(';')[0] || 'video/mp4';
+
+      const fetchedStream = await info.download({
+        type: videoOnly ? 'video' : 'video+audio',
+        itag: bestFormat.itag,
+        format: bestFormat.mime_type?.includes('mp4') ? 'mp4' : undefined,
+      });
+
+      downloadStream = toNodeStream(fetchedStream);
+      usingVideoOnly = videoOnly;
     }
 
-    const safeTitle = sanitizeFileName(info.basic_info?.title);
-    const mime = bestFormat.mime_type?.split(';')[0] || 'video/mp4';
+    if (!downloadStream) {
+      const { stream, videoOnly: vo } = await attemptDirectDownload(yt, videoId);
+      downloadStream = stream;
+      usingVideoOnly = vo;
+    }
+
+    if (!downloadStream) {
+      return res.status(500).json({ error: 'Geen geschikt formaat gevonden voor deze video.' });
+    }
 
     res.setHeader('Content-Type', mime);
     res.setHeader('Content-Disposition', `attachment; filename="${safeTitle}.mp4"`);
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
 
-    const downloadStream = await info.download({
-      type: videoOnly ? 'video' : 'video+audio',
-      itag: bestFormat.itag,
-      format: bestFormat.mime_type?.includes('mp4') ? 'mp4' : undefined,
-    });
-
-    const stream = toNodeStream(downloadStream);
-    if (!stream) {
-      return res.status(500).json({ error: 'Kon stream niet openen. Probeer opnieuw.' });
-    }
-
-    stream.on('error', (err) => {
+    downloadStream.on('error', (err) => {
       console.error('Download stream error:', err);
       if (!res.headersSent) {
         res.status(500).json({ error: 'Probleem tijdens downloaden. Probeer opnieuw.' });
@@ -225,7 +256,7 @@ export default async function handler(req, res) {
       }
     });
 
-    stream.pipe(res);
+    downloadStream.pipe(res);
   } catch (err) {
     console.error('Download error:', err);
     return res.status(500).json({ error: 'Kon de video niet ophalen. Controleer de link en probeer opnieuw.' });
