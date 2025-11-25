@@ -56,7 +56,11 @@ let ytClientPromise;
 const getClient = async () => {
   if (!ytClientPromise) {
     ensureCustomEval();
-    ytClientPromise = Innertube.create({ cache: new UniversalCache(false) });
+    const authCookie = process.env.YOUTUBE_COOKIE || '';
+    ytClientPromise = Innertube.create({
+      cache: new UniversalCache(false),
+      cookie: authCookie || undefined,
+    });
   }
   return ytClientPromise;
 };
