@@ -133,19 +133,37 @@ const pickBestMuxed = (info) => {
   return pool.sort((a, b) => (b.height || 0) - (a.height || 0))[0];
 };
 
+const pickBestVideoOnly = (info) => {
+  const sd = info?.streaming_data;
+  if (!sd) return null;
+
+  const candidates = [...(sd.formats || []), ...(sd.adaptive_formats || [])].filter((f) => {
+    const hasVideo = f.has_video || typeof f.height === 'number' || f.quality_label;
+    const hasNoAudio = !(f.has_audio || f.audio_codec || f.audioTrack);
+    return hasVideo && hasNoAudio;
+  });
+
+  if (!candidates.length) return null;
+  const mp4 = candidates.filter((f) => f.mime_type?.includes('mp4'));
+  const pool = mp4.length ? mp4 : candidates;
+  return pool.sort((a, b) => (b.height || 0) - (a.height || 0))[0];
+};
+
 const fetchInfoWithFallback = async (yt, videoId) => {
   const clients = [undefined, 'ANDROID', 'WEB_EMBEDDED', 'MWEB'];
   for (const client of clients) {
     try {
       const info = client ? await yt.getInfo(videoId, { client }) : await yt.getBasicInfo(videoId);
       const format = pickBestMuxed(info);
-      if (format) return { info, format };
+      if (format) return { info, format, videoOnly: false };
+      const videoOnly = pickBestVideoOnly(info);
+      if (videoOnly) return { info, format: videoOnly, videoOnly: true };
     } catch (err) {
       // continue to next client
       console.warn('Client fallback failed', client, err?.message);
     }
   }
-  return { info: null, format: null };
+  return { info: null, format: null, videoOnly: false };
 };
 
 export default async function handler(req, res) {
@@ -173,10 +191,10 @@ export default async function handler(req, res) {
 
   try {
     const yt = await getClient();
-    const { info, format: bestFormat } = await fetchInfoWithFallback(yt, videoId);
+    const { info, format: bestFormat, videoOnly } = await fetchInfoWithFallback(yt, videoId);
 
-    if (!bestFormat || (!bestFormat.has_audio && !bestFormat.audio_codec)) {
-      return res.status(500).json({ error: 'Geen geschikt formaat met audio gevonden voor deze video.' });
+    if (!bestFormat) {
+      return res.status(500).json({ error: 'Geen geschikt formaat gevonden voor deze video.' });
     }
 
     const safeTitle = sanitizeFileName(info.basic_info?.title);
@@ -188,7 +206,7 @@ export default async function handler(req, res) {
     res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
 
     const downloadStream = await info.download({
-      type: 'video+audio',
+      type: videoOnly ? 'video' : 'video+audio',
       itag: bestFormat.itag,
       format: bestFormat.mime_type?.includes('mp4') ? 'mp4' : undefined,
     });
