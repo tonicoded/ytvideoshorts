@@ -165,28 +165,34 @@ const streamDirectUrl = async (url) => {
 };
 
 const fetchInfoWithFallback = async (yt, videoId) => {
-  const clients = [undefined, 'ANDROID', 'WEB_EMBEDDED', 'MWEB'];
+  const clients = [undefined, 'ANDROID', 'WEB_EMBEDDED', 'MWEB', 'TV'];
   for (const client of clients) {
     try {
       const info = client ? await yt.getInfo(videoId, { client }) : await yt.getBasicInfo(videoId);
+      const playability = info.playability_status;
+      if (playability?.status && playability.status !== 'OK') {
+        return { info: null, format: null, videoOnly: false, playabilityError: playability?.reason || playability?.status };
+      }
       const format = pickBestMuxed(info);
-      if (format) return { info, format, videoOnly: false };
+      if (format) return { info, format, videoOnly: false, playabilityError: null };
       const videoOnly = pickBestVideoOnly(info);
-      if (videoOnly) return { info, format: videoOnly, videoOnly: true };
+      if (videoOnly) return { info, format: videoOnly, videoOnly: true, playabilityError: null };
     } catch (err) {
       // continue to next client
       console.warn('Client fallback failed', client, err?.message);
     }
   }
-  return { info: null, format: null, videoOnly: false };
+  return { info: null, format: null, videoOnly: false, playabilityError: null };
 };
 
 const attemptDirectDownload = async (yt, videoId) => {
   const attempts = [
     { type: 'video+audio', client: 'ANDROID', format: 'mp4', quality: 'best' },
     { type: 'video+audio', client: 'WEB', format: 'mp4', quality: 'best' },
+    { type: 'video+audio', client: 'TV', format: 'mp4', quality: 'best' },
     { type: 'video', client: 'ANDROID', format: 'mp4', quality: 'best' },
     { type: 'video', client: 'WEB', format: 'mp4', quality: 'best' },
+    { type: 'video', client: 'TV', format: 'mp4', quality: 'best' },
   ];
 
   for (const opts of attempts) {
@@ -226,7 +232,11 @@ export default async function handler(req, res) {
 
   try {
     const yt = await getClient();
-    const { info, format: bestFormat, videoOnly } = await fetchInfoWithFallback(yt, videoId);
+    const { info, format: bestFormat, videoOnly, playabilityError } = await fetchInfoWithFallback(yt, videoId);
+
+    if (playabilityError) {
+      return res.status(403).json({ error: playabilityError });
+    }
 
     let downloadStream = null;
     let usingVideoOnly = videoOnly;
