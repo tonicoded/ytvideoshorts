@@ -149,6 +149,21 @@ const pickBestVideoOnly = (info) => {
   return pool.sort((a, b) => (b.height || 0) - (a.height || 0))[0];
 };
 
+const streamDirectUrl = async (url) => {
+  try {
+    const res = await fetch(url, {
+      headers: {
+        'user-agent': 'Mozilla/5.0 (compatible; ytvideoshorts/1.0)',
+      },
+    });
+    if (!res.ok || !res.body) return null;
+    return toNodeStream(res.body);
+  } catch (err) {
+    console.warn('Direct URL stream failed', err?.message);
+    return null;
+  }
+};
+
 const fetchInfoWithFallback = async (yt, videoId) => {
   const clients = [undefined, 'ANDROID', 'WEB_EMBEDDED', 'MWEB'];
   for (const client of clients) {
@@ -222,14 +237,21 @@ export default async function handler(req, res) {
       safeTitle = sanitizeFileName(info.basic_info?.title);
       mime = bestFormat.mime_type?.split(';')[0] || 'video/mp4';
 
-      const fetchedStream = await info.download({
-        type: videoOnly ? 'video' : 'video+audio',
-        itag: bestFormat.itag,
-        format: bestFormat.mime_type?.includes('mp4') ? 'mp4' : undefined,
-      });
+      // If YouTube already gives a direct URL, stream it without decipher.
+      if (bestFormat.url) {
+        downloadStream = await streamDirectUrl(bestFormat.url);
+      }
 
-      downloadStream = toNodeStream(fetchedStream);
-      usingVideoOnly = videoOnly;
+      // Fallback to deciphered download if needed.
+      if (!downloadStream) {
+        const fetchedStream = await info.download({
+          type: videoOnly ? 'video' : 'video+audio',
+          itag: bestFormat.itag,
+          format: bestFormat.mime_type?.includes('mp4') ? 'mp4' : undefined,
+        });
+        downloadStream = toNodeStream(fetchedStream);
+        usingVideoOnly = videoOnly;
+      }
     }
 
     if (!downloadStream) {
