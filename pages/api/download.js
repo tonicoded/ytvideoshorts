@@ -119,9 +119,11 @@ const pickBestMuxed = (info) => {
   const sd = info?.streaming_data;
   if (!sd) return null;
 
-  const candidates = [...(sd.formats || []), ...(sd.adaptive_formats || [])].filter(
-    (f) => (f.has_audio || f.audio_codec) && f.has_video
-  );
+  const candidates = [...(sd.formats || []), ...(sd.adaptive_formats || [])].filter((f) => {
+    const hasAudio = f.has_audio || f.audio_codec || f.audioTrack;
+    const hasVideo = f.has_video || typeof f.height === 'number' || f.quality_label;
+    return hasAudio && hasVideo;
+  });
 
   if (!candidates.length) return null;
 
@@ -129,6 +131,21 @@ const pickBestMuxed = (info) => {
   const pool = mp4.length ? mp4 : candidates;
 
   return pool.sort((a, b) => (b.height || 0) - (a.height || 0))[0];
+};
+
+const fetchInfoWithFallback = async (yt, videoId) => {
+  const clients = [undefined, 'ANDROID', 'WEB_EMBEDDED', 'MWEB'];
+  for (const client of clients) {
+    try {
+      const info = client ? await yt.getInfo(videoId, { client }) : await yt.getBasicInfo(videoId);
+      const format = pickBestMuxed(info);
+      if (format) return { info, format };
+    } catch (err) {
+      // continue to next client
+      console.warn('Client fallback failed', client, err?.message);
+    }
+  }
+  return { info: null, format: null };
 };
 
 export default async function handler(req, res) {
@@ -156,19 +173,7 @@ export default async function handler(req, res) {
 
   try {
     const yt = await getClient();
-    let info = await yt.getBasicInfo(videoId);
-
-    let bestFormat = pickBestMuxed(info);
-
-    // Fallback: try Android client, which often exposes more muxed formats for Shorts.
-    if (!bestFormat) {
-      const altInfo = await yt.getInfo(videoId, { client: 'ANDROID' });
-      const altFormat = pickBestMuxed(altInfo);
-      if (altFormat) {
-        info = altInfo;
-        bestFormat = altFormat;
-      }
-    }
+    const { info, format: bestFormat } = await fetchInfoWithFallback(yt, videoId);
 
     if (!bestFormat || (!bestFormat.has_audio && !bestFormat.audio_codec)) {
       return res.status(500).json({ error: 'Geen geschikt formaat met audio gevonden voor deze video.' });
