@@ -9,6 +9,9 @@ export const config = {
   },
 };
 
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
 const evaluator = (data, env) => {
   const sandbox = vm.createContext({
     ...env,
@@ -153,9 +156,19 @@ export default async function handler(req, res) {
 
   try {
     const yt = await getClient();
-    const info = await yt.getBasicInfo(videoId);
+    let info = await yt.getBasicInfo(videoId);
 
-    const bestFormat = pickBestMuxed(info);
+    let bestFormat = pickBestMuxed(info);
+
+    // Fallback: try Android client, which often exposes more muxed formats for Shorts.
+    if (!bestFormat) {
+      const altInfo = await yt.getInfo(videoId, { client: 'ANDROID' });
+      const altFormat = pickBestMuxed(altInfo);
+      if (altFormat) {
+        info = altInfo;
+        bestFormat = altFormat;
+      }
+    }
 
     if (!bestFormat || (!bestFormat.has_audio && !bestFormat.audio_codec)) {
       return res.status(500).json({ error: 'Geen geschikt formaat met audio gevonden voor deze video.' });
